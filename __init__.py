@@ -1,3 +1,4 @@
+
 # Copyright (c) 2004-2007 TINY SPRL. (http://tiny.be)
 # Copyright (c) 2007 Cedric Krier.
 # Copyright (c) 2007 Bertrand Chenal.
@@ -25,4 +26,8 @@
 #
 ##############################################################################
 
+import corporation_type
 import partner
+import state
+import country
+import address
