@@ -2,7 +2,7 @@
 #this repository contains the full copyright notices and license terms.
 {
     "name" : "Party",
-    "version" : "0.1",
+    "version" : "0.0.1",
     "author" : "B2CK",
     'email': 'info@b2ck.com',
     'website': 'http://www.tryton.org/',
@@ -17,6 +17,7 @@
         "party.xml",
         "category.xml",
         "address.xml",
+        "contact_mechanism.xml",
     ],
     'translation': [
         'fr_FR.csv',
