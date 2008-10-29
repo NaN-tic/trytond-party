@@ -24,26 +24,38 @@ class Party(OSV):
     _description = __doc__
     _name = "party.party"
 
-    name = fields.Char('Name', size=None, required=True, select=1,
+    name = fields.Char('Name', required=True, select=1,
            states=STATES)
-    code = fields.Char('Code', size=None, required=True, select=1,
+    code = fields.Char('Code', required=True, select=1,
             readonly=True, order_field="%(table)s.code_length %(order)s, " \
                     "%(table)s.code %(order)s")
     code_length = fields.Integer('Code Length', select=1, readonly=True)
     lang = fields.Many2One("ir.lang", 'Language', states=STATES)
-    vat_number = fields.Char('VAT Number',size=None,
-            help="Value Added Tax number", states=STATES)
+    vat_number = fields.Char('VAT Number', help="Value Added Tax number",
+            states=STATES)
     vat_country = fields.Selection(VAT_COUNTRIES, 'VAT Country', states=STATES,
         help="Setting VAT country will enable verification of the VAT number.")
     vat_code = fields.Function('get_vat_code', type='char', string="VAT Code")
     addresses = fields.One2Many('party.address', 'party',
-           'Addresses',states=STATES)
+           'Addresses', states=STATES)
+    contact_mechanisms = fields.One2Many('party.contact_mechanism', 'party',
+            'Contact Mechanisms', states=STATES)
     categories = fields.Many2Many(
             'party.category', 'party_category_rel',
             'party', 'category', 'Categories',
             states=STATES)
     active = fields.Boolean('Active', select=1)
     full_name = fields.Function('get_full_name', type='char')
+    phone = fields.Function('get_mechanism', arg='phone', type='char',
+            string='Phone')
+    mobile = fields.Function('get_mechanism', arg='mobile', type='char',
+            string='Mobile')
+    fax = fields.Function('get_mechanism', arg='fax', type='char',
+            string='Fax')
+    email = fields.Function('get_mechanism', arg='email', type='char',
+            string='E-Mail')
+    website = fields.Function('get_mechanism', arg='website', type='char',
+            string='Website')
 
     def __init__(self):
         super(Party, self).__init__()
@@ -76,6 +88,17 @@ class Party(OSV):
         res = {}
         for party in self.browse(cursor, user, ids, context=context):
             res[party.id] = party.name
+        return res
+
+    def get_mechanism(self, cursor, user, ids, name, arg, context=None):
+        if not ids:
+            return []
+        res = {}
+        for party in self.browse(cursor, user, ids, context=context):
+            res[party.id] = ''
+            for mechanism in party.contact_mechanisms:
+                if mechanism.type == arg:
+                    res[party.id] = mechanism.value
         return res
 
     def create(self, cursor, user, values, context=None):
