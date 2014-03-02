@@ -1,10 +1,18 @@
-Version 2.0.3 - 2013-12-04
+Version 3.0.0 - 2013-10-21
 * Bug fixes (see mercurial logs for details)
 
-Version 2.0.2 - 2012-11-05
+Version 2.8.0 - 2013-04-22
+* Bug fixes (see mercurial logs for details)
+* Add url widget to contact mechanism list view
+
+Version 2.6.0 - 2012-10-22
 * Bug fixes (see mercurial logs for details)
 
-Version 2.0.1 - 2011-10-01
+Version 2.4.0 - 2012-04-24
+* Bug fixes (see mercurial logs for details)
+* Allow to have no Party Sequence
+
+Version 2.2.0 - 2011-10-24
 * Bug fixes (see mercurial logs for details)
 
 Version 2.0.0 - 2011-04-27
