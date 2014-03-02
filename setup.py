@@ -25,10 +25,10 @@ requires = []
 for dep in info.get('depends', []):
     if not re.match(r'(ir|res|webdav)(\W|$)', dep):
         requires.append('trytond_%s >= %s.%s, < %s.%s' %
-                (dep, major_version, minor_version, major_version,
-                    minor_version + 1))
+            (dep, major_version, minor_version, major_version,
+                minor_version + 1))
 requires.append('trytond >= %s.%s, < %s.%s' %
-        (major_version, minor_version, major_version, minor_version + 1))
+    (major_version, minor_version, major_version, minor_version + 1))
 
 setup(name='trytond_party',
     version=info.get('version', '0.0.1'),
@@ -36,16 +36,17 @@ setup(name='trytond_party',
     long_description=read('README'),
     author='Tryton',
     url='http://www.tryton.org/',
-    download_url="http://downloads.tryton.org/" + \
-        info.get('version', '0.0.1').rsplit('.', 1)[0] + '/',
+    download_url=("http://downloads.tryton.org/" +
+        info.get('version', '0.0.1').rsplit('.', 1)[0] + '/'),
     package_dir={'trytond.modules.party': '.'},
     packages=[
         'trytond.modules.party',
         'trytond.modules.party.tests',
         ],
     package_data={
-        'trytond.modules.party': info.get('xml', []) \
-            + ['tryton.cfg', 'locale/*.po', '*.odt', 'icons/*.svg'],
+        'trytond.modules.party': (info.get('xml', [])
+            + ['tryton.cfg', 'view/*.xml', 'locale/*.po', '*.odt',
+                'icons/*.svg']),
         },
     classifiers=[
         'Development Status :: 5 - Production/Stable',
@@ -57,15 +58,16 @@ setup(name='trytond_party',
         'Intended Audience :: Manufacturing',
         'License :: OSI Approved :: GNU General Public License (GPL)',
         'Natural Language :: Bulgarian',
+        'Natural Language :: Catalan',
         'Natural Language :: Czech',
         'Natural Language :: Dutch',
         'Natural Language :: English',
         'Natural Language :: French',
         'Natural Language :: German',
         'Natural Language :: Russian',
+        'Natural Language :: Slovenian',
         'Natural Language :: Spanish',
         'Operating System :: OS Independent',
-        'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
         'Topic :: Office/Business',
         ],

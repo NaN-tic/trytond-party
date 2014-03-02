@@ -1,8 +1,9 @@
-Version 2.6.2 - 2013-12-04
+Version 3.0.0 - 2013-10-21
 * Bug fixes (see mercurial logs for details)
 
-Version 2.6.1 - 2013-05-02
+Version 2.8.0 - 2013-04-22
 * Bug fixes (see mercurial logs for details)
+* Add url widget to contact mechanism list view
 
 Version 2.6.0 - 2012-10-22
 * Bug fixes (see mercurial logs for details)

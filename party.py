@@ -34,8 +34,6 @@ class Party(ModelSQL, ModelView):
     name = fields.Char('Name', required=True, select=True,
         states=STATES, depends=DEPENDS)
     code = fields.Char('Code', required=True, select=True,
-        order_field="%(table)s.code_length %(order)s, " \
-            "%(table)s.code %(order)s",
         states={
             'readonly': Eval('code_readonly', True),
             },
@@ -55,9 +53,8 @@ class Party(ModelSQL, ModelView):
         depends=DEPENDS,
         help="Setting VAT country will enable validation of the VAT number.",
         translate=False)
-    vat_code = fields.Function(fields.Char('VAT Code',
-        on_change_with=['vat_number', 'vat_country']), 'get_vat_code',
-        searcher='search_vat_code')
+    vat_code = fields.Function(fields.Char('VAT Code'),
+        'on_change_with_vat_code', searcher='search_vat_code')
     addresses = fields.One2Many('party.address', 'party',
         'Addresses', states=STATES, depends=DEPENDS)
     contact_mechanisms = fields.One2Many('party.contact_mechanism', 'party',
@@ -77,15 +74,18 @@ class Party(ModelSQL, ModelView):
         super(Party, cls).__setup__()
         cls._sql_constraints = [
             ('code_uniq', 'UNIQUE(code)',
-             'The code of the party must be unique!')
-        ]
-        cls._constraints += [
-            ('check_vat', 'invalid_vat'),
+             'The code of the party must be unique.')
         ]
         cls._error_messages.update({
-            'invalid_vat': 'Invalid VAT number!',
-        })
+                'invalid_vat': ('Invalid VAT number "%(vat)s" on party '
+                    '"%(party)s".'),
+                })
         cls._order.insert(0, ('name', 'ASC'))
+
+    @staticmethod
+    def order_code(tables):
+        table, _ = tables[None]
+        return [table.code_length, table.code]
 
     @staticmethod
     def default_active():
@@ -100,10 +100,9 @@ class Party(ModelSQL, ModelView):
         if Transaction().user == 0:
             return []
         Address = Pool().get('party.address')
-        fields_names = list(x for x in set(Address._fields.keys()
-                + Address._inherit_fields.keys())
-                if x not in ['id', 'create_uid', 'create_date',
-                    'write_uid', 'write_date'])
+        fields_names = list(x for x in Address._fields.keys()
+            if x not in ('id', 'create_uid', 'create_date',
+                'write_uid', 'write_date'))
         return [Address.default_get(fields_names)]
 
     @staticmethod
@@ -122,10 +121,8 @@ class Party(ModelSQL, ModelView):
     def get_code_readonly(self, name):
         return True
 
-    def on_change_with_vat_code(self):
-        return (self.vat_country or '') + (self.vat_number or '')
-
-    def get_vat_code(self, name):
+    @fields.depends('vat_country', 'vat_number')
+    def on_change_with_vat_code(self, name=None):
         return (self.vat_country or '') + (self.vat_number or '')
 
     @classmethod
@@ -152,29 +149,32 @@ class Party(ModelSQL, ModelView):
         return ''
 
     @classmethod
-    def create(cls, values):
+    def create(cls, vlist):
         Sequence = Pool().get('ir.sequence')
         Configuration = Pool().get('party.configuration')
 
-        values = values.copy()
-        if not values.get('code'):
-            config = Configuration(1)
-            values['code'] = Sequence.get_id(config.party_sequence.id)
-
-        values['code_length'] = len(values['code'])
-        return super(Party, cls).create(values)
+        vlist = [x.copy() for x in vlist]
+        for values in vlist:
+            if not values.get('code'):
+                config = Configuration(1)
+                values['code'] = Sequence.get_id(config.party_sequence.id)
+            values['code_length'] = len(values['code'])
+            values.setdefault('addresses', None)
+        return super(Party, cls).create(vlist)
 
     @classmethod
-    def write(cls, parties, vals):
-        if vals.get('code'):
-            vals = vals.copy()
-            vals['code_length'] = len(vals['code'])
-        super(Party, cls).write(parties, vals)
+    def write(cls, *args):
+        actions = iter(args)
+        args = []
+        for parties, values in zip(actions, actions):
+            if values.get('code'):
+                values = values.copy()
+                values['code_length'] = len(values['code'])
+            args.extend((parties, values))
+        super(Party, cls).write(*args)
 
     @classmethod
     def copy(cls, parties, default=None):
-        Address = Pool().get('party.address')
-
         if default is None:
             default = {}
         default = default.copy()
@@ -182,13 +182,17 @@ class Party(ModelSQL, ModelView):
         return super(Party, cls).copy(parties, default=default)
 
     @classmethod
-    def search_rec_name(cls, name, clause):
-        parties = cls.search([('code',) + tuple(clause[1:])], order=[])
-        if parties:
-            parties += cls.search([('name',) + tuple(clause[1:])], order=[])
+    def search_global(cls, text):
+        for id_, rec_name, icon in super(Party, cls).search_global(text):
+            icon = icon or 'tryton-party'
+            yield id_, rec_name, icon
 
-            return [('id', 'in', [party.id for party in parties])]
-        return [('name',) + tuple(clause[1:])]
+    @classmethod
+    def search_rec_name(cls, name, clause):
+        return ['OR',
+            ('code',) + tuple(clause[1:]),
+            ('name',) + tuple(clause[1:]),
+            ]
 
     def address_get(self, type=None):
         """
@@ -209,19 +213,25 @@ class Party(ModelSQL, ModelView):
                 return address
         return default_address
 
+    @classmethod
+    def validate(cls, parties):
+        super(Party, cls).validate(parties)
+        for party in parties:
+            party.check_vat()
+
     def check_vat(self):
         '''
         Check the VAT number depending of the country.
         http://sima-pc.com/nif.php
         '''
         if not HAS_VATNUMBER:
-            return True
+            return
         vat_number = self.vat_number
 
         if not self.vat_country:
-            return True
+            return
 
-        if not getattr(vatnumber, 'check_vat_' + \
+        if not getattr(vatnumber, 'check_vat_' +
                 self.vat_country.lower())(vat_number):
 
             #Check if user doesn't have put country code in number
@@ -231,8 +241,10 @@ class Party(ModelSQL, ModelView):
                     'vat_number': vat_number,
                     })
             else:
-                return False
-        return True
+                self.raise_user_error('invalid_vat', {
+                        'vat': vat_number,
+                        'party': self.rec_name,
+                        })
 
 
 class PartyCategory(ModelSQL):
@@ -282,9 +294,9 @@ class CheckVIES(Wizard):
     def __setup__(cls):
         super(CheckVIES, cls).__setup__()
         cls._error_messages.update({
-            'vies_unavailable': 'The VIES service is unavailable, ' \
-                    'try again later.',
-            })
+                'vies_unavailable': ('The VIES service is unavailable, '
+                    'try again later.'),
+                })
 
     def transition_check(self):
         Party = Pool().get('party.party')
