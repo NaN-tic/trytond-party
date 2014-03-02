@@ -1,10 +1,16 @@
 #This file is part of Tryton.  The COPYRIGHT file at the top level of
 #this repository contains the full copyright notices and license terms.
 from trytond.model import ModelView, ModelSQL, fields
+from trytond.pyson import Eval
+from trytond.transaction import Transaction
+from trytond import backend
+
+__all__ = ['ContactMechanism']
 
 STATES = {
-    'readonly': "active == False",
-}
+    'readonly': ~Eval('active'),
+    }
+DEPENDS = ['active']
 
 _TYPES = [
     ('phone', 'Phone'),
@@ -22,79 +28,113 @@ _TYPES = [
 
 class ContactMechanism(ModelSQL, ModelView):
     "Contact Mechanism"
-    _name = "party.contact_mechanism"
-    _description = __doc__
+    __name__ = 'party.contact_mechanism'
     _rec_name = 'value'
 
     type = fields.Selection(_TYPES, 'Type', required=True, states=STATES,
-            sort=False)
-    value = fields.Char('Value', select=1, states=STATES, on_change=['value'])
-    comment = fields.Text('Comment', states=STATES)
+        sort=False, depends=DEPENDS)
+    value = fields.Char('Value', select=True, states=STATES, depends=DEPENDS)
+    comment = fields.Text('Comment', states=STATES, depends=DEPENDS)
     party = fields.Many2One('party.party', 'Party', required=True,
-            ondelete='CASCADE', states=STATES, select=1)
-    active = fields.Boolean('Active', select=1)
+        ondelete='CASCADE', states=STATES, select=True, depends=DEPENDS)
+    active = fields.Boolean('Active', select=True)
     sequence = fields.Integer('Sequence')
-    email = fields.Function('get_value', fnct_inv='set_value', type='char',
-            string="E-Mail", states={
-                'invisible': "type != 'email'",
-                'required': "type == 'email'",
-                'readonly': "active == False",
-            }, on_change=['email'], depends=['value', 'type', 'active'])
-    website = fields.Function('get_value', fnct_inv='set_value', type='char',
-            string="Website", states={
-                'invisible': "type != 'website'",
-                'required': "type == 'website'",
-                'readonly': "active == False",
-            }, on_change=['website'], depends=['value', 'type', 'active'])
-    skype = fields.Function('get_value', fnct_inv='set_value', type='char',
-            string="Skype", states={
-                'invisible': "type != 'skype'",
-                'required': "type == 'skype'",
-                'readonly': "active == False",
-            }, on_change=['skype'], depends=['value', 'type', 'active'])
-    sip = fields.Function('get_value', fnct_inv='set_value', type='char',
-            string="SIP", states={
-                'invisible': "type != 'sip'",
-                'required': "type == 'sip'",
-                'readonly': "active == False",
-            }, on_change=['sip'], depends=['value', 'type', 'active'])
-    other_value = fields.Function('get_value', fnct_inv='set_value',
-            type='char', string='Value', states={
-                'invisible': "type in ('email', 'website', 'skype', 'sip')",
-                'required': "type not in ('email', 'website')",
-                'readonly': "active == False",
-            }, on_change=['other_value'], depends=['value', 'type', 'active'])
+    email = fields.Function(fields.Char('E-Mail', states={
+        'invisible': Eval('type') != 'email',
+        'required': Eval('type') == 'email',
+        'readonly': ~Eval('active', True),
+        }, depends=['value', 'type', 'active']),
+        'get_value', setter='set_value')
+    website = fields.Function(fields.Char('Website', states={
+        'invisible': Eval('type') != 'website',
+        'required': Eval('type') == 'website',
+        'readonly': ~Eval('active', True),
+        }, depends=['value', 'type', 'active']),
+        'get_value', setter='set_value')
+    skype = fields.Function(fields.Char('Skype', states={
+        'invisible': Eval('type') != 'skype',
+        'required': Eval('type') == 'skype',
+        'readonly': ~Eval('active', True),
+        }, depends=['value', 'type', 'active']),
+        'get_value', setter='set_value')
+    sip = fields.Function(fields.Char('SIP', states={
+        'invisible': Eval('type') != 'sip',
+        'required': Eval('type') == 'sip',
+        'readonly': ~Eval('active', True),
+        }, depends=['value', 'type', 'active']),
+        'get_value', setter='set_value')
+    other_value = fields.Function(fields.Char('Value', states={
+        'invisible': Eval('type').in_(['email', 'website', 'skype', 'sip']),
+        'required': ~Eval('type').in_(['email', 'website']),
+        'readonly': ~Eval('active', True),
+        }, depends=['value', 'type', 'active']),
+        'get_value', setter='set_value')
+    url = fields.Function(fields.Char('URL', states={
+                'invisible': (~Eval('type').in_(['email', 'website', 'skype',
+                            'sip'])
+                    | ~Eval('url')),
+                }, depends=['type']),
+        'get_url')
 
-    def __init__(self):
-        super(ContactMechanism, self).__init__()
-        self._order.insert(0, ('party', 'ASC'))
-        self._order.insert(1, ('sequence', 'ASC'))
-        self._error_messages.update({
-            'write_party': 'You can not modify the party of ' \
-                    'a contact mechanism!',
-            })
+    @classmethod
+    def __setup__(cls):
+        super(ContactMechanism, cls).__setup__()
+        cls._order.insert(0, ('party', 'ASC'))
+        cls._order.insert(1, ('sequence', 'ASC'))
+        cls._error_messages.update({
+                'write_party': ('You can not modify the party of contact '
+                    'mechanism "%s".'),
+                })
 
-    def default_type(self, cursor, user, context=None):
+    @classmethod
+    def __register__(cls, module_name):
+        TableHandler = backend.get('TableHandler')
+        cursor = Transaction().cursor
+        table = TableHandler(cursor, cls, module_name)
+
+        super(ContactMechanism, cls).__register__(module_name)
+
+        # Migration from 2.4: drop required on sequence
+        table.not_null_action('sequence', action='remove')
+
+    @staticmethod
+    def order_sequence(tables):
+        table, _ = tables[None]
+        return [table.sequence == None, table.sequence]
+
+    @staticmethod
+    def default_type():
         return 'phone'
 
-    def default_active(self, cursor, user, context=None):
+    @staticmethod
+    def default_active():
         return True
 
-    def get_value(self, cursor, user, ids, names, arg, context=None):
-        res = {}
-        for name in names:
-            res[name] = {}
-        for mechanism in self.browse(cursor, user, ids, context=context):
-            for name in names:
-                res[name][mechanism.id] = mechanism.value
-        return res
+    @classmethod
+    def get_value(cls, mechanisms, names):
+        return dict((name, dict((m.id, m.value) for m in mechanisms))
+            for name in names)
 
-    def set_value(self, cursor, user, obj_id, name, value, arg, context=None):
-        self.write(cursor, user, obj_id, {
+    def get_url(self, name=None, value=None):
+        if value is None:
+            value = self.value
+        if self.type == 'email':
+            return 'mailto:%s' % value
+        elif self.type == 'website':
+            return value
+        elif self.type == 'skype':
+            return 'callto:%s' % value
+        elif self.type == 'sip':
+            return 'sip:%s' % value
+        return None
+
+    @classmethod
+    def set_value(cls, mechanisms, name, value):
+        cls.write(mechanisms, {
             'value': value,
-            }, context=context)
+            })
 
-    def _change_value(self, cursor, user, value, context=None):
+    def _change_value(self, value):
         return {
             'value': value,
             'website': value,
@@ -102,41 +142,45 @@ class ContactMechanism(ModelSQL, ModelView):
             'skype': value,
             'sip': value,
             'other_value': value,
-        }
+            'url': self.get_url(value=value)
+            }
 
-    def on_change_value(self, cursor, user, ids, vals, context=None):
-        return self._change_value(cursor, user, vals.get('value'),
-                context=context)
+    @fields.depends('value', 'type')
+    def on_change_type(self):
+        return {
+            'url': self.get_url(value=self.value),
+            }
 
-    def on_change_website(self, cursor, user, ids, vals, context=None):
-        return self._change_value(cursor, user, vals.get('website'),
-                context=context)
+    @fields.depends('value', 'type')
+    def on_change_value(self):
+        return self._change_value(self.value)
 
-    def on_change_email(self, cursor, user, ids, vals, context=None):
-        return self._change_value(cursor, user, vals.get('email'),
-                context=context)
+    @fields.depends('website', 'type')
+    def on_change_website(self):
+        return self._change_value(self.website)
 
-    def on_change_skype(self, cursor, user, ids, vals, context=None):
-        return self._change_value(cursor, user, vals.get('skype'),
-                context=context)
+    @fields.depends('email', 'type')
+    def on_change_email(self):
+        return self._change_value(self.email)
 
-    def on_change_sip(self, cursor, user, ids, vals, context=None):
-        return self._change_value(cursor, user, vals.get('sip'),
-                context=context)
+    @fields.depends('skype', 'type')
+    def on_change_skype(self):
+        return self._change_value(self.skype)
 
-    def on_change_other_value(self, cursor, user, ids, vals, context=None):
-        return self._change_value(cursor, user, vals.get('other_value'),
-                context=context)
+    @fields.depends('sip', 'type')
+    def on_change_sip(self):
+        return self._change_value(self.sip)
 
-    def write(self, cursor, user, ids, vals, context=None):
-        if 'party' in vals:
-            if isinstance(ids, (int, long)):
-                ids = [ids]
-            for mechanism in self.browse(cursor, user, ids, context=context):
-                if mechanism.party.id != vals['party']:
-                    self.raise_user_error(cursor, 'write_party',
-                            context=context)
-        return super(ContactMechanism, self).write(cursor, user, ids, vals,
-                context=context)
+    @fields.depends('other_value', 'type')
+    def on_change_other_value(self):
+        return self._change_value(self.other_value)
 
-ContactMechanism()
+    @classmethod
+    def write(cls, *args):
+        actions = iter(args)
+        for mechanisms, values in zip(actions, actions):
+            if 'party' in values:
+                for mechanism in mechanisms:
+                    if mechanism.party.id != values['party']:
+                        cls.raise_user_error('write_party', (mechanism.rec_name,))
+        super(ContactMechanism, cls).write(*args)
