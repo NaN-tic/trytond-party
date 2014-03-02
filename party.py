@@ -2,9 +2,13 @@
 #this repository contains the full copyright notices and license terms.
 import logging
 from trytond.model import ModelView, ModelSQL, fields
-from trytond.wizard import Wizard
-from trytond.pyson import Not, Bool, Eval
+from trytond.wizard import Wizard, StateTransition, StateView, Button
+from trytond.pyson import Bool, Eval
 from trytond.transaction import Transaction
+from trytond.pool import Pool
+
+__all__ = ['Party', 'PartyCategory', 'CheckVIESNoResult', 'CheckVIESResult',
+           'CheckVIES']
 
 HAS_VATNUMBER = False
 VAT_COUNTRIES = [('', '')]
@@ -18,40 +22,46 @@ except ImportError:
             'Unable to import vatnumber. VAT number validation disabled.')
 
 STATES = {
-    'readonly': Not(Bool(Eval('active'))),
+    'readonly': ~Eval('active', True),
 }
+DEPENDS = ['active']
 
 
 class Party(ModelSQL, ModelView):
     "Party"
-    _description = __doc__
-    _name = "party.party"
+    __name__ = 'party.party'
 
-    name = fields.Char('Name', required=True, select=1,
-           states=STATES)
-    code = fields.Char('Code', required=True, select=1,
-            readonly=True, order_field="%(table)s.code_length %(order)s, " \
-                    "%(table)s.code %(order)s")
-    code_length = fields.Integer('Code Length', select=1, readonly=True)
-    lang = fields.Many2One("ir.lang", 'Language', states=STATES)
+    name = fields.Char('Name', required=True, select=True,
+        states=STATES, depends=DEPENDS)
+    code = fields.Char('Code', required=True, select=True,
+        states={
+            'readonly': Eval('code_readonly', True),
+            },
+        depends=['code_readonly'])
+    code_length = fields.Integer('Code Length', select=True, readonly=True)
+    code_readonly = fields.Function(fields.Boolean('Code Readonly'),
+        'get_code_readonly')
+    lang = fields.Many2One("ir.lang", 'Language', states=STATES,
+        depends=DEPENDS)
     vat_number = fields.Char('VAT Number', help="Value Added Tax number",
-            states={
-                'readonly': Not(Bool(Eval('active'))),
-                'required': Bool(Eval('vat_country')),
-            })
+        states={
+            'readonly': ~Eval('active', True),
+            'required': Bool(Eval('vat_country')),
+            },
+        depends=['active', 'vat_country'])
     vat_country = fields.Selection(VAT_COUNTRIES, 'VAT Country', states=STATES,
+        depends=DEPENDS,
         help="Setting VAT country will enable validation of the VAT number.",
         translate=False)
-    vat_code = fields.Function(fields.Char('VAT Code',
-        on_change_with=['vat_number', 'vat_country']), 'get_vat_code',
-        searcher='search_vat_code')
+    vat_code = fields.Function(fields.Char('VAT Code'),
+        'on_change_with_vat_code', searcher='search_vat_code')
     addresses = fields.One2Many('party.address', 'party',
-           'Addresses', states=STATES)
+        'Addresses', states=STATES, depends=DEPENDS)
     contact_mechanisms = fields.One2Many('party.contact_mechanism', 'party',
-            'Contact Mechanisms', states=STATES)
+        'Contact Mechanisms', states=STATES, depends=DEPENDS)
     categories = fields.Many2Many('party.party-party.category',
-            'party', 'category', 'Categories', states=STATES)
-    active = fields.Boolean('Active', select=1)
+        'party', 'category', 'Categories', states=STATES, depends=DEPENDS)
+    active = fields.Boolean('Active', select=True)
     full_name = fields.Function(fields.Char('Full Name'), 'get_full_name')
     phone = fields.Function(fields.Char('Phone'), 'get_mechanism')
     mobile = fields.Function(fields.Char('Mobile'), 'get_mechanism')
@@ -59,46 +69,64 @@ class Party(ModelSQL, ModelView):
     email = fields.Function(fields.Char('E-Mail'), 'get_mechanism')
     website = fields.Function(fields.Char('Website'), 'get_mechanism')
 
-    def __init__(self):
-        super(Party, self).__init__()
-        self._sql_constraints = [
+    @classmethod
+    def __setup__(cls):
+        super(Party, cls).__setup__()
+        cls._sql_constraints = [
             ('code_uniq', 'UNIQUE(code)',
-             'The code of the party must be unique!')
+             'The code of the party must be unique.')
         ]
-        self._constraints += [
-            ('check_vat', 'invalid_vat'),
-        ]
-        self._error_messages.update({
-            'invalid_vat': 'Invalid VAT number!',
-        })
-        self._order.insert(0, ('name', 'ASC'))
+        cls._error_messages.update({
+                'invalid_vat': ('Invalid VAT number "%(vat)s" on party '
+                    '"%(party)s".'),
+                })
+        cls._order.insert(0, ('name', 'ASC'))
 
-    def default_active(self):
+    @staticmethod
+    def order_code(tables):
+        table, _ = tables[None]
+        return [table.code_length, table.code]
+
+    @staticmethod
+    def default_active():
         return True
 
-    def default_categories(self):
+    @staticmethod
+    def default_categories():
         return Transaction().context.get('categories', [])
 
-    def default_addresses(self):
-        address_obj = self.pool.get('party.address')
-        fields_names = list(x for x in set(address_obj._columns.keys()
-                + address_obj._inherit_fields.keys())
-                if x not in ['id', 'create_uid', 'create_date',
-                    'write_uid', 'write_date'])
-        return [address_obj.default_get(fields_names)]
-
-    def on_change_with_vat_code(self, vals):
-        return (vals.get('vat_country') or '') + (vals.get('vat_number') or '')
-
-    def get_vat_code(self, ids, name):
-        if not ids:
+    @staticmethod
+    def default_addresses():
+        if Transaction().user == 0:
             return []
-        res = {}
-        for party in self.browse(ids):
-            res[party.id] = (party.vat_country or '') + (party.vat_number or '')
-        return res
+        Address = Pool().get('party.address')
+        fields_names = list(x for x in Address._fields.keys()
+            if x not in ('id', 'create_uid', 'create_date',
+                'write_uid', 'write_date'))
+        return [Address.default_get(fields_names)]
 
-    def search_vat_code(self, name, clause):
+    @staticmethod
+    def default_lang():
+        Configuration = Pool().get('party.configuration')
+        config = Configuration(1)
+        if config.party_lang:
+            return config.party_lang.id
+
+    @staticmethod
+    def default_code_readonly():
+        Configuration = Pool().get('party.configuration')
+        config = Configuration(1)
+        return bool(config.party_sequence)
+
+    def get_code_readonly(self, name):
+        return True
+
+    @fields.depends('vat_country', 'vat_number')
+    def on_change_with_vat_code(self, name=None):
+        return (self.vat_country or '') + (self.vat_number or '')
+
+    @classmethod
+    def search_vat_code(cls, name, clause):
         res = []
         value = clause[2]
         for country, _ in VAT_COUNTRIES:
@@ -111,225 +139,187 @@ class Party(ModelSQL, ModelView):
         res.append(('vat_number', clause[1], value))
         return res
 
-    def get_full_name(self, ids, name):
-        if not ids:
-            return []
-        res = {}
-        for party in self.browse(ids):
-            res[party.id] = party.name
-        return res
+    def get_full_name(self, name):
+        return self.name
 
-    def get_mechanism(self, ids, name):
-        if not ids:
-            return []
-        res = {}
-        for party in self.browse(ids):
-            res[party.id] = ''
-            for mechanism in party.contact_mechanisms:
-                if mechanism.type == name:
-                    res[party.id] = mechanism.value
-                    break
-        return res
+    def get_mechanism(self, name):
+        for mechanism in self.contact_mechanisms:
+            if mechanism.type == name:
+                return mechanism.value
+        return ''
 
-    def create(self, values):
-        sequence_obj = self.pool.get('ir.sequence')
-        config_obj = self.pool.get('party.configuration')
+    @classmethod
+    def create(cls, vlist):
+        Sequence = Pool().get('ir.sequence')
+        Configuration = Pool().get('party.configuration')
 
-        values = values.copy()
-        if not values.get('code'):
-            config = config_obj.browse(1)
-            values['code'] = sequence_obj.get_id(config.party_sequence.id)
+        vlist = [x.copy() for x in vlist]
+        for values in vlist:
+            if not values.get('code'):
+                config = Configuration(1)
+                values['code'] = Sequence.get_id(config.party_sequence.id)
+            values['code_length'] = len(values['code'])
+            values.setdefault('addresses', None)
+        return super(Party, cls).create(vlist)
 
-        values['code_length'] = len(values['code'])
-        return super(Party, self).create(values)
+    @classmethod
+    def write(cls, *args):
+        actions = iter(args)
+        args = []
+        for parties, values in zip(actions, actions):
+            if values.get('code'):
+                values = values.copy()
+                values['code_length'] = len(values['code'])
+            args.extend((parties, values))
+        super(Party, cls).write(*args)
 
-    def write(self, ids, vals):
-        if vals.get('code'):
-            vals = vals.copy()
-            vals['code_length'] = len(vals['code'])
-        return super(Party, self).write(ids, vals)
-
-    def copy(self, ids, default=None):
-        address_obj = self.pool.get('party.address')
-
-        int_id = False
-        if isinstance(ids, (int, long)):
-            int_id = True
-            ids = [ids]
-
+    @classmethod
+    def copy(cls, parties, default=None):
         if default is None:
             default = {}
         default = default.copy()
-        default['code'] = False
-        default['addresses'] = False
-        new_ids = []
-        for party in self.browse(ids):
-            new_id = super(Party, self).copy(party.id, default=default)
-            address_obj.copy([x.id for x in party.addresses],
-                    default={
-                        'party': new_id,
-                        })
-            new_ids.append(new_id)
+        default['code'] = None
+        return super(Party, cls).copy(parties, default=default)
 
-        if int_id:
-            return new_ids[0]
-        return new_ids
+    @classmethod
+    def search_global(cls, text):
+        for id_, rec_name, icon in super(Party, cls).search_global(text):
+            icon = icon or 'tryton-party'
+            yield id_, rec_name, icon
 
-    def search_rec_name(self, name, clause):
-        ids = self.search([('code',) + tuple(clause[1:])], order=[])
-        if ids:
-            ids += self.search([('name',) + tuple(clause[1:])], order=[])
-            return [('id', 'in', ids)]
-        return [('name',) + tuple(clause[1:])]
+    @classmethod
+    def search_rec_name(cls, name, clause):
+        return ['OR',
+            ('code',) + tuple(clause[1:]),
+            ('name',) + tuple(clause[1:]),
+            ]
 
-    def address_get(self, party_id, type=None):
+    def address_get(self, type=None):
         """
-        Try to find an address for the given type, if no type match
-        the first address is return.
+        Try to find an address for the given type, if no type matches
+        the first address is returned.
         """
-        address_obj = self.pool.get("party.address")
-        address_ids = address_obj.search(
-            [("party", "=", party_id), ("active", "=", True)],
+        Address = Pool().get("party.address")
+        addresses = Address.search(
+            [("party", "=", self.id), ("active", "=", True)],
             order=[('sequence', 'ASC'), ('id', 'ASC')])
-        if not address_ids:
-            return False
-        default_address = address_ids[0]
+        if not addresses:
+            return None
+        default_address = addresses[0]
         if not type:
             return default_address
-        for address in address_obj.browse(address_ids):
-            if address[type]:
-                    return address.id
+        for address in addresses:
+            if getattr(address, type):
+                return address
         return default_address
 
-    def check_vat(self, ids):
+    @classmethod
+    def validate(cls, parties):
+        super(Party, cls).validate(parties)
+        for party in parties:
+            party.check_vat()
+
+    def check_vat(self):
         '''
         Check the VAT number depending of the country.
         http://sima-pc.com/nif.php
         '''
         if not HAS_VATNUMBER:
-            return True
-        for party in self.browse(ids):
-            vat_number = party.vat_number
+            return
+        vat_number = self.vat_number
 
-            if not party.vat_country:
-                continue
+        if not self.vat_country:
+            return
 
-            if not getattr(vatnumber, 'check_vat_' + \
-                    party.vat_country.lower())(vat_number):
+        if not getattr(vatnumber, 'check_vat_' +
+                self.vat_country.lower())(vat_number):
 
-                #Check if user doesn't have put country code in number
-                if vat_number.startswith(party.vat_country):
-                    vat_number = vat_number[len(party.vat_country):]
-                    self.write(party.id, {
-                        'vat_number': vat_number,
+            #Check if user doesn't have put country code in number
+            if vat_number.startswith(self.vat_country):
+                vat_number = vat_number[len(self.vat_country):]
+                Party.write([self], {
+                    'vat_number': vat_number,
+                    })
+            else:
+                self.raise_user_error('invalid_vat', {
+                        'vat': vat_number,
+                        'party': self.rec_name,
                         })
-                else:
-                    return False
-        return True
-
-Party()
 
 
 class PartyCategory(ModelSQL):
     'Party - Category'
-    _name = 'party.party-party.category'
+    __name__ = 'party.party-party.category'
     _table = 'party_category_rel'
-    _description = __doc__
     party = fields.Many2One('party.party', 'Party', ondelete='CASCADE',
-            required=True, select=1)
-    category = fields.Many2One('party.category', 'Category', ondelete='CASCADE',
-            required=True, select=1)
-
-PartyCategory()
+            required=True, select=True)
+    category = fields.Many2One('party.category', 'Category',
+        ondelete='CASCADE', required=True, select=True)
 
 
-class CheckVIESNoCheck(ModelView):
-    'Check VIES - No Check'
-    _name = 'party.check_vies.no_check'
-    _description = __doc__
-
-CheckVIESNoCheck()
+class CheckVIESNoResult(ModelView):
+    'Check VIES'
+    __name__ = 'party.check_vies.no_result'
 
 
-class CheckVIESCheck(ModelView):
-    'Check VIES - Check'
-    _name = 'party.check_vies.check'
-    _description = __doc__
+class CheckVIESResult(ModelView):
+    'Check VIES'
+    __name__ = 'party.check_vies.result'
     parties_succeed = fields.Many2Many('party.party', None, None,
-            'Parties Succeed', readonly=True, states={
-                'invisible': Not(Bool(Eval('parties_succeed'))),
-                })
+        'Parties Succeed', readonly=True, states={
+            'invisible': ~Eval('parties_succeed'),
+            })
     parties_failed = fields.Many2Many('party.party', None, None,
-            'Parties Failed', readonly=True, states={
-                'invisible': Not(Bool(Eval('parties_failed'))),
-                })
-
-CheckVIESCheck()
+        'Parties Failed', readonly=True, states={
+            'invisible': ~Eval('parties_failed'),
+            })
 
 
 class CheckVIES(Wizard):
     'Check VIES'
-    _name = 'party.check_vies'
-    states = {
-        'init': {
-            'result': {
-                'type': 'choice',
-                'next_state': '_choice',
-            },
-        },
-        'no_check': {
-            'result': {
-                'type': 'form',
-                'object': 'party.check_vies.no_check',
-                'state': [
-                    ('end', 'Ok', 'tryton-ok', True),
-                ],
-            },
-        },
-        'check': {
-            'actions': ['_check'],
-            'result': {
-                'type': 'form',
-                'object': 'party.check_vies.check',
-                'state': [
-                    ('end', 'Ok', 'tryton-ok', True),
-                ],
-            },
-        },
-    }
+    __name__ = 'party.check_vies'
+    start_state = 'check'
 
-    def __init__(self):
-        super(CheckVIES, self).__init__()
-        self._error_messages.update({
-            'vies_unavailable': 'The VIES service is unavailable, ' \
-                    'try again later.',
-            })
+    check = StateTransition()
+    result = StateView('party.check_vies.result',
+        'party.check_vies_result', [
+            Button('Ok', 'end', 'tryton-ok', True),
+            ])
+    no_result = StateView('party.check_vies.no_result',
+        'party.check_vies_no_result', [
+            Button('Ok', 'end', 'tryton-ok', True),
+            ])
 
-    def _choice(self, data):
+    @classmethod
+    def __setup__(cls):
+        super(CheckVIES, cls).__setup__()
+        cls._error_messages.update({
+                'vies_unavailable': ('The VIES service is unavailable, '
+                    'try again later.'),
+                })
+
+    def transition_check(self):
+        Party = Pool().get('party.party')
+
         if not HAS_VATNUMBER or not hasattr(vatnumber, 'check_vies'):
-            return 'no_check'
-        return 'check'
+            return 'no_result'
 
-    def _check(self, data):
-        party_obj = self.pool.get('party.party')
-        res = {
-            'parties_succeed': [],
-            'parties_failed': [],
-        }
-        parties = party_obj.browse(data['ids'])
+        parties_succeed = []
+        parties_failed = []
+        parties = Party.browse(Transaction().context.get('active_ids'))
         for party in parties:
             if not party.vat_code:
                 continue
             try:
                 if not vatnumber.check_vies(party.vat_code):
-                    res['parties_failed'].append(party.id)
+                    parties_failed.append(party.id)
                 else:
-                    res['parties_succeed'].append(party.id)
+                    parties_succeed.append(party.id)
             except Exception, e:
                 if hasattr(e, 'faultstring') \
                         and hasattr(e.faultstring, 'find'):
                     if e.faultstring.find('INVALID_INPUT'):
-                        res['parties_failed'].append(party.id)
+                        parties_failed.append(party.id)
                         continue
                     if e.faultstring.find('SERVICE_UNAVAILABLE') \
                             or e.faultstring.find('MS_UNAVAILABLE') \
@@ -337,6 +327,12 @@ class CheckVIES(Wizard):
                             or e.faultstring.find('SERVER_BUSY'):
                         self.raise_user_error('vies_unavailable')
                 raise
-        return res
+        self.result.parties_succeed = parties_succeed
+        self.result.parties_failed = parties_failed
+        return 'result'
 
-CheckVIES()
+    def default_result(self, fields):
+        return {
+            'parties_succeed': [p.id for p in self.result.parties_succeed],
+            'parties_failed': [p.id for p in self.result.parties_failed],
+            }
