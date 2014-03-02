@@ -4,7 +4,7 @@
 from trytond.model import ModelView, ModelSQL, fields
 from trytond.pyson import Eval, If
 from trytond.transaction import Transaction
-from trytond.backend import TableHandler
+from trytond import backend
 
 __all__ = ['Address']
 
@@ -28,14 +28,12 @@ class Address(ModelSQL, ModelView):
     zip = fields.Char('Zip', states=STATES, depends=DEPENDS)
     city = fields.Char('City', states=STATES, depends=DEPENDS)
     country = fields.Many2One('country.country', 'Country',
-        on_change=['country', 'subdivision'], states=STATES, depends=DEPENDS)
+        states=STATES, depends=DEPENDS)
     subdivision = fields.Many2One("country.subdivision",
             'Subdivision', domain=[('country', '=', Eval('country'))],
             states=STATES, depends=['active', 'country'])
     active = fields.Boolean('Active')
-    sequence = fields.Integer("Sequence",
-        order_field='(%(table)s.sequence IS NULL) %(order)s, '
-        '%(table)s.sequence %(order)s')
+    sequence = fields.Integer("Sequence")
     full_address = fields.Function(fields.Text('Full Address'),
             'get_full_address')
 
@@ -50,6 +48,7 @@ class Address(ModelSQL, ModelView):
 
     @classmethod
     def __register__(cls, module_name):
+        TableHandler = backend.get('TableHandler')
         cursor = Transaction().cursor
         table = TableHandler(cursor, cls, module_name)
 
@@ -57,6 +56,11 @@ class Address(ModelSQL, ModelView):
 
         # Migration from 2.4: drop required on sequence
         table.not_null_action('sequence', action='remove')
+
+    @staticmethod
+    def order_sequence(tables):
+        table, _ = tables[None]
+        return [table.sequence == None, table.sequence]
 
     @staticmethod
     def default_active():
@@ -100,23 +104,24 @@ class Address(ModelSQL, ModelView):
 
     @classmethod
     def search_rec_name(cls, name, clause):
-        addresses = cls.search(['OR',
-                ('zip',) + tuple(clause[1:]),
-                ('city',) + tuple(clause[1:]),
-                ('name',) + tuple(clause[1:]),
-                ], order=[])
-        if addresses:
-            return [('id', 'in', [address.id for address in addresses])]
-        return [('party',) + tuple(clause[1:])]
+        return ['OR',
+            ('zip',) + tuple(clause[1:]),
+            ('city',) + tuple(clause[1:]),
+            ('name',) + tuple(clause[1:]),
+            ('party',) + tuple(clause[1:]),
+            ]
 
     @classmethod
-    def write(cls, addresses, vals):
-        if 'party' in vals:
-            for address in addresses:
-                if address.party.id != vals['party']:
-                    cls.raise_user_error('write_party', (address.rec_name,))
-        super(Address, cls).write(addresses, vals)
+    def write(cls, *args):
+        actions = iter(args)
+        for addresses, values in zip(actions, actions):
+            if 'party' in values:
+                for address in addresses:
+                    if address.party.id != values['party']:
+                        cls.raise_user_error('write_party', (address.rec_name,))
+        super(Address, cls).write(*args)
 
+    @fields.depends('subdivision', 'country')
     def on_change_country(self):
         if (self.subdivision
                 and self.subdivision.country != self.country):
