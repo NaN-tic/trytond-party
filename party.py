@@ -1,6 +1,7 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
 import logging
+from importlib import import_module
 
 from sql.functions import CharLength
 
@@ -13,6 +14,8 @@ from trytond.pool import Pool
 __all__ = ['Party', 'PartyCategory', 'CheckVIESNoResult', 'CheckVIESResult',
            'CheckVIES']
 
+logger = logging.getLogger(__name__)
+
 HAS_VATNUMBER = False
 VAT_COUNTRIES = [('', '')]
 try:
@@ -21,8 +24,9 @@ try:
     for country in vatnumber.countries():
         VAT_COUNTRIES.append((country, country))
 except ImportError:
-    logging.getLogger('party').warning(
-            'Unable to import vatnumber. VAT number validation disabled.')
+    logger.warning(
+        'Unable to import vatnumber. VAT number validation disabled.',
+        exc_info=True)
 
 STATES = {
     'readonly': ~Eval('active', True),
@@ -127,6 +131,23 @@ class Party(ModelSQL, ModelView):
     def on_change_with_vat_code(self, name=None):
         return (self.vat_country or '') + (self.vat_number or '')
 
+    @fields.depends('vat_country', 'vat_number')
+    def on_change_with_vat_number(self):
+        if not self.vat_country:
+            return self.vat_number
+        code = self.vat_country.lower()
+        vat_module = None
+        try:
+            module = import_module('stdnum.%s' % code)
+            vat_module = getattr(module, 'vat', None)
+            if not vat_module:
+                vat_module = import_module('stdnum.%s.vat' % code)
+        except ImportError:
+            pass
+        if vat_module:
+            return vat_module.compact(self.vat_number)
+        return self.vat_number
+
     @classmethod
     def search_vat_code(cls, name, clause):
         res = []
@@ -173,13 +194,17 @@ class Party(ModelSQL, ModelView):
 
     @classmethod
     def search_global(cls, text):
-        for id_, rec_name, icon in super(Party, cls).search_global(text):
+        for record, rec_name, icon in super(Party, cls).search_global(text):
             icon = icon or 'tryton-party'
-            yield id_, rec_name, icon
+            yield record, rec_name, icon
 
     @classmethod
     def search_rec_name(cls, name, clause):
-        return ['OR',
+        if clause[1].startswith('!') or clause[1].startswith('not '):
+            bool_op = 'AND'
+        else:
+            bool_op = 'OR'
+        return [bool_op,
             ('code',) + tuple(clause[1:]),
             ('name',) + tuple(clause[1:]),
             ]
@@ -216,25 +241,21 @@ class Party(ModelSQL, ModelView):
         '''
         if not HAS_VATNUMBER:
             return
-        vat_number = self.vat_number
 
         if not self.vat_country:
             return
 
+        vat_number = self.on_change_with_vat_number()
+        if vat_number != self.vat_number:
+            self.vat_number = vat_number
+            self.save()
+
         if not getattr(vatnumber, 'check_vat_' +
                 self.vat_country.lower())(vat_number):
-
-            # Check if user doesn't have put country code in number
-            if vat_number.startswith(self.vat_country):
-                vat_number = vat_number[len(self.vat_country):]
-                Party.write([self], {
-                    'vat_number': vat_number,
+            self.raise_user_error('invalid_vat', {
+                    'vat': vat_number,
+                    'party': self.rec_name,
                     })
-            else:
-                self.raise_user_error('invalid_vat', {
-                        'vat': vat_number,
-                        'party': self.rec_name,
-                        })
 
 
 class PartyCategory(ModelSQL):
@@ -273,11 +294,11 @@ class CheckVIES(Wizard):
     check = StateTransition()
     result = StateView('party.check_vies.result',
         'party.check_vies_result', [
-            Button('Ok', 'end', 'tryton-ok', True),
+            Button('OK', 'end', 'tryton-ok', True),
             ])
     no_result = StateView('party.check_vies.no_result',
         'party.check_vies_no_result', [
-            Button('Ok', 'end', 'tryton-ok', True),
+            Button('OK', 'end', 'tryton-ok', True),
             ])
 
     @classmethod
